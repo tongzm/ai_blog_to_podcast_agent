@@ -1,3 +1,5 @@
+[简体中文](README_zh.md)
+
 ## 📰 ➡️ 🎙️ Blog to Podcast Agent
 
 This is a Streamlit-based application that allows users to convert any blog post into a podcast. The app uses a configurable LLM (e.g., GPT, GLM) for content extraction, Firecrawl for scraping blog content, and Microsoft Edge's Text-to-Speech (TTS) service for generating audio. Users simply input a blog URL, and the app will generate a podcast episode based on the blog's main article.
