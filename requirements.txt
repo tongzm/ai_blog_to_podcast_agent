@@ -1,0 +1,6 @@
+agno>=2.2.10
+streamlit>=1.40.2
+openai>=1.102.0
+firecrawl-py>=4.6.0
+edge-tts>=6.1.9
+langdetect>=1.0.9
