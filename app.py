@@ -3,6 +3,12 @@ import asyncio
 import re
 import streamlit as st
 from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor # <--- 新增引入
+
+# --- 移除 nest_asyncio 的强制调用，改用线程隔离方案 ---
+# import nest_asyncio
+# nest_asyncio.apply()
+# ----------------------------------------------------
 
 # Third-party imports
 from agno.agent import Agent
@@ -15,9 +21,20 @@ from langdetect import detect, LangDetectException
 
 # -- Helper Functions --
 
+# --- 关键修改: 使用线程池隔离异步任务 ---
 def run_async(coro):
-    """Runs an async coroutine in a sync context."""
-    return asyncio.run(coro)
+    """
+    Runs an async coroutine in a separate thread.
+    This avoids blocking the main Streamlit event loop (Tornado),
+    fixing the WebSocketClosedError on Windows and ensuring stability on Cloud.
+    """
+    def start_loop(c):
+        # 在新线程中创建一个全新的事件循环执行任务
+        return asyncio.run(c)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(start_loop, coro)
+        return future.result()
 
 @st.cache_data
 def get_edge_tts_voices_cached():
@@ -28,15 +45,26 @@ def get_edge_tts_voices_cached():
             return voices.find()
         except Exception:
             return []
+    # 这里也可以直接调用，因为 run_async 已经是线程安全的了
     return run_async(get_voices())
 
 async def generate_edge_tts_audio(text, voice):
     """Generates audio using edge-tts and returns bytes."""
+    if not text or not text.strip():
+        return None
+
     communicate = edge_tts.Communicate(text, voice)
     audio_chunks = []
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_chunks.append(chunk["data"])
+    
+    try:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_chunks.append(chunk["data"])
+    except Exception as e:
+        # 这里的 print 会显示在控制台，方便调试
+        print(f"TTS Generation Error: {e}")
+        return None
+
     return b"".join(audio_chunks)
 
 # -- Streamlit UI --
@@ -55,6 +83,7 @@ with st.sidebar.expander("🤖 LLM Configuration", expanded=True):
 with st.sidebar.expander("🗣️ TTS Configuration", expanded=True):
     st.info("Microsoft Edge TTS (Free) is used for audio generation.")
     
+    # 获取语音列表
     ms_voice = None
     voices_list = get_edge_tts_voices_cached()
     
@@ -130,9 +159,11 @@ if st.button("🎙️ Generate Podcast", disabled=is_disabled):
                         st.error("No TTS voice selected or available. Cannot generate audio.")
                     else:
                         st.write(f"Using voice: **{ms_voice}**")
-                        audio_bytes = run_async(generate_edge_tts_audio(extracted_text, ms_voice))
                         
-                        # 4. Display results
+                        # 4. Generate and Play Audio
+                        # 使用新的线程隔离方式调用
+                        audio_bytes = run_async(generate_edge_tts_audio(str(extracted_text), ms_voice))
+                        
                         if audio_bytes:
                             st.success("Podcast generated! 🎧")
                             st.audio(audio_bytes, format="audio/mp3")
@@ -141,7 +172,7 @@ if st.button("🎙️ Generate Podcast", disabled=is_disabled):
                             with st.expander("📄 Extracted Text"):
                                 st.text(extracted_text)
                         else:
-                            st.error("Failed to generate audio.")
+                            st.error("Failed to generate audio. Please check console logs.")
             except Exception as e:
                 st.error(f"An unexpected error occurred: {e}")
 else:
