@@ -7,8 +7,7 @@ What if I told you that you could build an AI that reads any blog post and turns
 I want to share a fun project I've been working on: The **AI Blog to Podcast Agent**. It’s a simple web app that lets you drop in a URL and get a ready-to-listen podcast episode in seconds. 🎧
 
 ---
-> **[Image Placeholder]**
-> *A captivating hero image for the blog post. It should visually represent the transformation of written text (like a digital article) into audible soundwaves, with a modern and magical feel. Think glowing particles moving from a screen to a pair of headphones.*
+![Conceptual image of soundwaves emanating from a digital article, representing the conversion of text to audio.](ai_blog2.png)
 ---
 
 ## The Secret Sauce: Just 4 Key Ingredients 🌶️
@@ -46,10 +45,7 @@ graph TD;
 
 The UI is super simple. All the magic is packed into this clean interface.
 
----
-> **[Image Placeholder]**
-> *A clear screenshot of the Streamlit application. It should show the sidebar with the API key inputs and the new URL links, the main area for the blog URL, and the 'Generate Podcast' button.*
----
+![App Screenshot](ai_blog.png)
 
 ## The Magic Code: All 101 Lines 📜
 To prove how simple this is, here is the *entire* Python script. All the functionality, from the UI to the AI agent logic to the audio generation, is right here.
