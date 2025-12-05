@@ -1,180 +1,101 @@
 import os
-import asyncio
-import re
-import streamlit as st
 from uuid import uuid4
-from concurrent.futures import ThreadPoolExecutor # <--- 新增引入
-
-# --- 移除 nest_asyncio 的强制调用，改用线程隔离方案 ---
-# import nest_asyncio
-# nest_asyncio.apply()
-# ----------------------------------------------------
-
-# Third-party imports
 from agno.agent import Agent
 from agno.run.agent import RunOutput
 from agno.models.openai import OpenAIChat
 from agno.tools.firecrawl import FirecrawlTools
-import edge_tts
-from edge_tts import VoicesManager
-from langdetect import detect, LangDetectException
+from elevenlabs import ElevenLabs
+import streamlit as st
 
-# -- Helper Functions --
-
-# --- 关键修改: 使用线程池隔离异步任务 ---
-def run_async(coro):
-    """
-    Runs an async coroutine in a separate thread.
-    This avoids blocking the main Streamlit event loop (Tornado),
-    fixing the WebSocketClosedError on Windows and ensuring stability on Cloud.
-    """
-    def start_loop(c):
-        # 在新线程中创建一个全新的事件循环执行任务
-        return asyncio.run(c)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(start_loop, coro)
-        return future.result()
-
-@st.cache_data
-def get_edge_tts_voices_cached():
-    """Fetches and caches available voices from edge-tts."""
-    async def get_voices():
-        try:
-            voices = await VoicesManager.create()
-            return voices.find()
-        except Exception:
-            return []
-    # 这里也可以直接调用，因为 run_async 已经是线程安全的了
-    return run_async(get_voices())
-
-async def generate_edge_tts_audio(text, voice):
-    """Generates audio using edge-tts and returns bytes."""
-    if not text or not text.strip():
-        return None
-
-    communicate = edge_tts.Communicate(text, voice)
-    audio_chunks = []
-    
-    try:
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_chunks.append(chunk["data"])
-    except Exception as e:
-        # 这里的 print 会显示在控制台，方便调试
-        print(f"TTS Generation Error: {e}")
-        return None
-
-    return b"".join(audio_chunks)
-
-# -- Streamlit UI --
+# Streamlit Setup
 st.set_page_config(page_title="📰 ➡️ 🎙️ Blog to Podcast", page_icon="🎙️")
 st.title("📰 ➡️ 🎙️ Blog to Podcast Agent")
 
-# -- Sidebar Configuration --
-st.sidebar.header("⚙️ Configuration")
+# API Keys (Runtime Input)
+st.sidebar.header("🔑 API Keys")
+# OpenAI API Compatible Model Settings
+st.sidebar.subheader("OpenAI API Compatible Model")
+openai_api_key = st.sidebar.text_input("API Key", type="password")
+openai_base_url = st.sidebar.text_input("Base URL", value="https://api.openai.com/v1")
+openai_model_id = st.sidebar.text_input("Model ID", value="gpt-5.1")
+# Other API Keys
+st.sidebar.subheader("Other Services")
+elevenlabs_key = st.sidebar.text_input("ElevenLabs API Key", type="password")
+firecrawl_key = st.sidebar.text_input("Firecrawl API Key", type="password")
 
-with st.sidebar.expander("🤖 LLM Configuration", expanded=True):
-    llm_api_key = st.text_input("API Key", type="password", help="Your API key for the LLM.")
-    llm_base_url = st.text_input("Base URL", help="The base URL of the OpenAI-compatible API.", value="https://apis.iflow.cn/v1")
-    llm_model_id = st.text_input("Model ID", help="The model name, e.g., glm-4.6, gpt-4o.", value="glm-4.6")
-    firecrawl_key = st.text_input("Firecrawl API Key", type="password", help="Needed for scraping the blog content.")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Get your API Keys:")
+st.sidebar.markdown("- [OpenAI API Keys](https://platform.openai.com/api-keys)")
+st.sidebar.markdown("- [ElevenLabs](https://elevenlabs.io/)")
+st.sidebar.markdown("- [Firecrawl](https://www.firecrawl.dev/)")
 
-with st.sidebar.expander("🗣️ TTS Configuration", expanded=True):
-    st.info("Microsoft Edge TTS (Free) is used for audio generation.")
-    
-    # 获取语音列表
-    ms_voice = None
-    voices_list = get_edge_tts_voices_cached()
-    
-    if voices_list:
-        voice_options = {f'{v["ShortName"]} ({v["Gender"]}) - {v["Locale"]}': v["ShortName"] for v in voices_list}
-        default_voice_name = "zh-CN-XiaoxiaoNeural"
-        default_index = 0
-        if default_voice_name in voice_options.values():
-            for i, key in enumerate(voice_options.keys()):
-                if voice_options[key] == default_voice_name:
-                    default_index = i
-                    break
-        
-        selected_voice_label = st.selectbox(
-            "Choose a Voice",
-            options=list(voice_options.keys()),
-            index=default_index,
-            help="Select the voice for the podcast narration."
-        )
-        ms_voice = voice_options[selected_voice_label]
-    else:
-        st.warning("Could not fetch voice list. A default will be used.")
-        ms_voice = "zh-CN-XiaoxiaoNeural"
-
-st.sidebar.markdown("""
----
-**Registration Links:**
-- [Get your iFlow (智谱AI) API Key](https://platform.iflow.cn/)
-- [Get your Firecrawl API Key](https://firecrawl.dev/)
-""")
-
-# -- Main App Logic --
+# Blog URL Input
 url = st.text_input("Enter Blog URL:", "")
 
-required_keys = [llm_api_key, firecrawl_key]
-is_disabled = not all(required_keys)
-
-if st.button("🎙️ Generate Podcast", disabled=is_disabled):
+# Generate Button
+if st.button("🎙️ Generate Podcast", disabled=not all([openai_api_key, elevenlabs_key, firecrawl_key])):
     if not url.strip():
         st.warning("Please enter a blog URL")
     else:
-        with st.spinner("Processing..."):
+        with st.spinner("Scraping blog and generating podcast..."):
             try:
-                # 1. Setup Agent
-                os.environ["OPENAI_API_KEY"] = llm_api_key
+                # Set API keys
                 os.environ["FIRECRAWL_API_KEY"] = firecrawl_key
-                agent_model = OpenAIChat(id=llm_model_id, api_key=llm_api_key, base_url=llm_base_url or None)
-                agent = Agent(name="BlogExtractor", model=agent_model, tools=[FirecrawlTools()], instructions=[])
-
-                # 2. Run agent to extract plain text content
-                st.info("Step 1/2: Scraping and extracting content...")
-                prompt = (
-                    "You are a content extraction engine. Your primary task is to extract the main article from the provided scraped content, including its title. "
-                    "Follow these rules strictly: "
-                    "1. Your output MUST BEGIN with the main title of the article. "
-                    "2. After the title, extract ONLY the main body text of the article. "
-                    "3. EXCLUDE all other elements, such as site-wide headers, navigation bars, footers, advertisements, author bios, and comment sections. "
-                    "4. Your output MUST be plain text. Do NOT use any Markdown formatting. "
-                    "5. Do NOT summarize, paraphrase, or change the original text. Output the extracted title and text verbatim. "
-                    "6. Do NOT include any introductory phrases, explanations, or any text other than the extracted article content. "
-                    f"Now, process the scraped content from this URL and extract its main title and body text: {url}"
+                
+                # Create agent for scraping and summarization
+                agent = Agent(
+                    name="Blog Summarizer",
+                    model=OpenAIChat(
+                        id=openai_model_id,
+                        api_key=openai_api_key,
+                        base_url=openai_base_url,
+                    ),
+                    tools=[FirecrawlTools()],
+                    instructions=[
+                        "Scrape the blog URL and create a concise, engaging summary (max 2000 characters) suitable for a podcast.",
+                        "The summary should be conversational and capture the main points."
+                    ],
                 )
-                response: RunOutput = agent.run(prompt)
-                extracted_text = response.content if hasattr(response, 'content') else str(response)
-
-                if not extracted_text:
-                    st.error("Failed to extract content. The blog might be inaccessible or the LLM failed to process it.")
-                else:
-                    # 3. Generate Audio using the extracted plain text
-                    st.info("Step 2/2: Generating audio...")
+                
+                # Get summary
+                response: RunOutput = agent.run(f"Scrape and summarize this blog for a podcast: {url}")
+                summary = response.content if hasattr(response, 'content') else str(response)
+                
+                if summary:
+                    # Initialize ElevenLabs client and generate audio
+                    client = ElevenLabs(api_key=elevenlabs_key)
                     
-                    if not ms_voice:
-                        st.error("No TTS voice selected or available. Cannot generate audio.")
-                    else:
-                        st.write(f"Using voice: **{ms_voice}**")
-                        
-                        # 4. Generate and Play Audio
-                        # 使用新的线程隔离方式调用
-                        audio_bytes = run_async(generate_edge_tts_audio(str(extracted_text), ms_voice))
-                        
-                        if audio_bytes:
-                            st.success("Podcast generated! 🎧")
-                            st.audio(audio_bytes, format="audio/mp3")
-                            st.download_button("Download Podcast", audio_bytes, "podcast.mp3", "audio/mp3")
-                            
-                            with st.expander("📄 Extracted Text"):
-                                st.text(extracted_text)
-                        else:
-                            st.error("Failed to generate audio. Please check console logs.")
+                    # Generate audio using text_to_speech.convert
+                    audio_generator = client.text_to_speech.convert(
+                        text=summary,
+                        voice_id="JBFqnCBsd6RMkjVDRZzb",
+                        model_id="eleven_multilingual_v2"
+                    )
+                    
+                    # Collect audio chunks if it's a generator
+                    audio_chunks = []
+                    for chunk in audio_generator:
+                        if chunk:
+                            audio_chunks.append(chunk)
+                    audio_bytes = b"".join(audio_chunks)
+                    
+                    # Display audio
+                    st.success("Podcast generated! 🎧")
+                    st.audio(audio_bytes, format="audio/mp3")
+                    
+                    # Download button
+                    st.download_button(
+                        "Download Podcast",
+                        audio_bytes,
+                        "podcast.mp3",
+                        "audio/mp3"
+                    )
+                    
+                    # Show summary
+                    with st.expander("📄 Podcast Summary"):
+                        st.write(summary)
+                else:
+                    st.error("Failed to generate summary")
+                    
             except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
-else:
-    if is_disabled:
-        st.info("Please fill in all required configuration in the sidebar to enable podcast generation.")
+                st.error(f"Error: {e}")
